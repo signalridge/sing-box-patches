@@ -18,7 +18,7 @@ upstream's, so `vendorHash` only changes when sing-box does.
 
 | Module | Patch | Purpose |
 |---|---|---|
-| `github.com/sagernet/sing-openconnect` | `0001-f5-saml-browser-challenge.patch` | F5 BIG-IP SAML login: when the gateway hands the logon to a SAML IdP, raise a browser challenge for the `MRHSession` (and `F5_ST`) cookies instead of failing with "unexpected first F5 HTML form ID" |
+| `github.com/sagernet/sing-openconnect` | `0001-f5-saml-browser-challenge.patch` | F5 BIG-IP SAML login: when the gateway hands the logon to a SAML IdP, raise a browser challenge for the `MRHSession` and `F5_ST` cookies instead of failing with "unexpected first F5 HTML form ID". The challenge has no final URL (the landing page depends on the webtop): cookie challenges may now omit it and then complete once every requested cookie is set |
 | `github.com/sagernet/sing-openconnect` | `0002-f5-options-parsing.patch` | F5 VPN options as real gateways send them: space-separated DNS/WINS/DNSSuffix lists, routes with dotted IPv4 or IPv6 netmasks, and optional values it cannot parse dropped with a warning (as openconnect does) instead of failing the connection |
 
 Write a patch in a clone of the module at the pinned commit (`cbd68c45de58`),

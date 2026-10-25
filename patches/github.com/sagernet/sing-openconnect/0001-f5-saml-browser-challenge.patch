@@ -1,16 +1,145 @@
-From 7e61c7ae84afcffe87b6bff25697cb8f0f59f5ce Mon Sep 17 00:00:00 2001
+From 4ffe9b39374404a2832fc75bd335241a6f62066f Mon Sep 17 00:00:00 2001
 From: LuYixian <mcluoc@gmail.com>
 Date: Sun, 25 Oct 2026 23:17:45 +0900
 Subject: [PATCH 1/2] Add F5 SAML authentication
 
 ---
- f5_auth.go      |  89 +++++++++++++
- f5_saml_test.go | 344 ++++++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 433 insertions(+)
+ auth_form.go                      |   9 +-
+ browser_cookie_completion_test.go |  93 ++++++++
+ f5_auth.go                        |  90 ++++++++
+ f5_saml_test.go                   | 368 ++++++++++++++++++++++++++++++
+ 4 files changed, 558 insertions(+), 2 deletions(-)
+ create mode 100644 browser_cookie_completion_test.go
  create mode 100644 f5_saml_test.go
 
+diff --git a/auth_form.go b/auth_form.go
+index 5486f04..a52bfdb 100644
+--- a/auth_form.go
++++ b/auth_form.go
+@@ -423,8 +423,10 @@ func validateBrowserRequest(request *BrowserRequest) (browserAuthenticationMode,
+ 		return browserAuthenticationModeCallback, nil
+ 	}
+ 	if cookieMode {
+-		if request.FinalURL == "" || len(request.CookieNames) == 0 || len(request.CallbackURLPrefixes) != 0 || len(request.HeaderNames) != 0 {
+-			return 0, E.New("openconnect cookie browser request requires only a final URL and cookie names")
++		// Without a final URL, the browser completes once it holds every
++		// requested cookie.
++		if len(request.CookieNames) == 0 || len(request.CallbackURLPrefixes) != 0 || len(request.HeaderNames) != 0 {
++			return 0, E.New("openconnect cookie browser request requires only cookie names and an optional final URL")
+ 		}
+ 		if invalidStringList(request.CookieNames, false) {
+ 			return 0, E.New("openconnect cookie browser request contains an empty or duplicate cookie name")
+@@ -488,6 +490,9 @@ func validateBrowserResponse(
+ 			}
+ 			seenCookieNames[cookie.Name] = struct{}{}
+ 		}
++		if request.FinalURL == "" && len(seenCookieNames) != len(request.CookieNames) {
++			return E.Errors(ErrInvalidBrowserAuthentication, E.New("browser result omitted a requested cookie"))
++		}
+ 		return nil
+ 	case browserAuthenticationModeHeaders:
+ 		if result.FinalURL != "" || len(result.Cookies) != 0 || len(result.Header) == 0 {
+diff --git a/browser_cookie_completion_test.go b/browser_cookie_completion_test.go
+new file mode 100644
+index 0000000..2e79b82
+--- /dev/null
++++ b/browser_cookie_completion_test.go
+@@ -0,0 +1,93 @@
++package openconnect
++
++import (
++	"errors"
++	"testing"
++)
++
++func TestCookieBrowserRequestWithoutFinalURL(t *testing.T) {
++	t.Parallel()
++	request := &BrowserRequest{
++		URL:              "https://vpn.example.com/",
++		CookieNames:      []string{"session", "ticket"},
++		EarlyCookieNames: []string{"error"},
++	}
++	mode, err := validateBrowserRequest(request)
++	if err != nil || mode != browserAuthenticationModeCookies {
++		t.Fatalf("validateBrowserRequest = %v, %v", mode, err)
++	}
++	for _, testCase := range []struct {
++		name   string
++		result BrowserResult
++		valid  bool
++	}{
++		{
++			name:   "every cookie",
++			result: BrowserResult{Cookies: []BrowserCookie{{Name: "ticket", Value: "t"}, {Name: "session", Value: "s"}}},
++			valid:  true,
++		},
++		{
++			name:   "early cookie",
++			result: BrowserResult{Cookies: []BrowserCookie{{Name: "error", Value: "denied"}}},
++			valid:  true,
++		},
++		{
++			name:   "missing cookie",
++			result: BrowserResult{Cookies: []BrowserCookie{{Name: "session", Value: "s"}}},
++		},
++		{
++			name:   "unrequested final URL",
++			result: BrowserResult{FinalURL: "https://vpn.example.com/done", Cookies: []BrowserCookie{{Name: "ticket", Value: "t"}, {Name: "session", Value: "s"}}},
++		},
++		{
++			name:   "unrequested cookie",
++			result: BrowserResult{Cookies: []BrowserCookie{{Name: "ticket", Value: "t"}, {Name: "session", Value: "s"}, {Name: "other", Value: "o"}}},
++		},
++	} {
++		t.Run(testCase.name, func(t *testing.T) {
++			t.Parallel()
++			result := testCase.result
++			err := validateBrowserResponse(request, mode, AuthResponse{Browser: &result})
++			if testCase.valid && err != nil {
++				t.Fatalf("expected the result to be accepted, got %v", err)
++			}
++			if !testCase.valid && !errors.Is(err, ErrInvalidBrowserAuthentication) {
++				t.Fatalf("expected the result to be rejected, got %v", err)
++			}
++		})
++	}
++}
++
++func TestCookieBrowserRequestWithFinalURLUnchanged(t *testing.T) {
++	t.Parallel()
++	request := &BrowserRequest{
++		URL:         "https://vpn.example.com/login",
++		FinalURL:    "https://vpn.example.com/done",
++		CookieNames: []string{"session", "ticket"},
++	}
++	mode, err := validateBrowserRequest(request)
++	if err != nil || mode != browserAuthenticationModeCookies {
++		t.Fatalf("validateBrowserRequest = %v, %v", mode, err)
++	}
++	err = validateBrowserResponse(request, mode, AuthResponse{Browser: &BrowserResult{
++		FinalURL: request.FinalURL,
++		Cookies:  []BrowserCookie{{Name: "session", Value: "s"}},
++	}})
++	if err != nil {
++		t.Fatalf("a final URL with some of the cookies is still accepted, got %v", err)
++	}
++	err = validateBrowserResponse(request, mode, AuthResponse{Browser: &BrowserResult{
++		Cookies: []BrowserCookie{{Name: "session", Value: "s"}, {Name: "ticket", Value: "t"}},
++	}})
++	if !errors.Is(err, ErrInvalidBrowserAuthentication) {
++		t.Fatalf("a result without the requested final URL is still rejected, got %v", err)
++	}
++}
++
++func TestCookieBrowserRequestNeedsCookieNames(t *testing.T) {
++	t.Parallel()
++	_, err := validateBrowserRequest(&BrowserRequest{URL: "https://vpn.example.com/", EarlyCookieNames: []string{"error"}})
++	if err == nil {
++		t.Fatal("expected a cookie request without cookie names to be rejected")
++	}
++}
 diff --git a/f5_auth.go b/f5_auth.go
-index 5a3bbd7..42513a1 100644
+index 5a3bbd7..67870e4 100644
 --- a/f5_auth.go
 +++ b/f5_auth.go
 @@ -26,6 +26,7 @@ const (
@@ -70,30 +199,31 @@ index 5a3bbd7..42513a1 100644
  	a.access.Lock()
  	formNumber := a.formNumber
  	if form != nil && form.html && !a.seenHTMLForm {
-@@ -539,6 +554,71 @@ func (a *f5Authentication) resetAuthenticationJar() error {
+@@ -539,6 +554,72 @@ func (a *f5Authentication) resetAuthenticationJar() error {
  	return nil
  }
  
 +// The gateway handed the logon off to a SAML identity provider. The browser
 +// logs in from the gateway's own login URL so that the MRHSession it ends up
-+// with is the one the identity provider authenticated.
++// with is the one the identity provider authenticated. The page it lands on
++// depends on the gateway's webtop, so there is no final URL: like
++// openconnect's native F5 login, the session counts as authenticated once
++// the gateway has set F5_ST next to MRHSession, which it only does after the
++// access policy allowed the session.
 +func (a *f5Authentication) beginSAMLAuthentication() (obtainedSession, *authenticationRequest, error) {
 +	if a.frontend.client.options.ExternalAuthDisabled {
 +		return nil, nil, markTerminal(E.Extend(ErrProtocolNotSupported, "gateway requested disabled external authentication"))
 +	}
 +	loginURL := cloneF5URL(a.frontend.client.serverURL)
-+	finalURL := cloneF5URL(loginURL)
-+	finalURL.Path = f5SAMLFinalPath
-+	finalURL.RawPath = ""
 +	a.access.Lock()
 +	a.currentForm = nil
 +	a.currentSAML = true
 +	a.access.Unlock()
 +	return nil, &authenticationRequest{
-+		FormID: "_saml",
++		FormID:  "_saml",
++		Message: "Sign in through the identity provider, then read the gateway's MRHSession and F5_ST cookies.",
 +		Browser: &BrowserRequest{
 +			URL:         loginURL.String(),
-+			FinalURL:    finalURL.String(),
 +			CookieNames: []string{"MRHSession", "F5_ST"},
 +		},
 +	}, nil
@@ -142,7 +272,7 @@ index 5a3bbd7..42513a1 100644
  func encodeF5AuthenticationResponse(form *f5AuthenticationForm, response *authenticationResponse) (string, error) {
  	var encoded strings.Builder
  	for fieldIndex, field := range form.fields {
-@@ -600,6 +680,15 @@ func f5FormHasPassword(form *f5AuthenticationForm) bool {
+@@ -600,6 +681,15 @@ func f5FormHasPassword(form *f5AuthenticationForm) bool {
  	return false
  }
  
@@ -160,16 +290,17 @@ index 5a3bbd7..42513a1 100644
  	if len(parts) < 5 {
 diff --git a/f5_saml_test.go b/f5_saml_test.go
 new file mode 100644
-index 0000000..75edea6
+index 0000000..16ca97b
 --- /dev/null
 +++ b/f5_saml_test.go
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,368 @@
 +package openconnect
 +
 +import (
 +	"context"
 +	"crypto/tls"
 +	"crypto/x509"
++	"errors"
 +	"net/http"
 +	"net/http/httptest"
 +	"slices"
@@ -262,6 +393,7 @@ index 0000000..75edea6
 +}
 +
 +func TestF5SAMLBrowserChallenge(t *testing.T) {
++	t.Parallel()
 +	for _, testCase := range []struct {
 +		name            string
 +		redirectBinding bool
@@ -270,6 +402,7 @@ index 0000000..75edea6
 +		{name: "redirect binding", redirectBinding: true},
 +	} {
 +		t.Run(testCase.name, func(t *testing.T) {
++			t.Parallel()
 +			g := newF5SAMLTestGateway(t, testCase.redirectBinding)
 +			client := newF5SAMLTestClient(t, g)
 +			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -311,14 +444,29 @@ index 0000000..75edea6
 +			if browser.URL != g.gateway.URL {
 +				t.Fatalf("browser URL = %q, want the gateway login URL %q", browser.URL, g.gateway.URL)
 +			}
-+			if browser.FinalURL != g.gateway.URL+f5SAMLFinalPath {
-+				t.Fatalf("browser final URL = %q", browser.FinalURL)
++			if browser.FinalURL != "" {
++				t.Fatalf("browser final URL = %q, want none", browser.FinalURL)
 +			}
 +			if !slices.Equal(browser.CookieNames, []string{"MRHSession", "F5_ST"}) {
 +				t.Fatalf("browser cookie names = %q", browser.CookieNames)
 +			}
 +			if len(browser.CallbackURLPrefixes) != 0 || len(browser.HeaderNames) != 0 || len(browser.EarlyCookieNames) != 0 {
 +				t.Fatalf("browser request mixes completion modes: %+v", browser)
++			}
++			if challenge.Message == "" {
++				t.Fatal("browser challenge has no sign-in message")
++			}
++
++			// MRHSession alone is the anonymous pre-login session: the
++			// challenge only completes once F5_ST is there too.
++			err = client.CompleteAuthChallenge(challenge.ID, AuthResponse{Browser: &BrowserResult{
++				Cookies: []BrowserCookie{{Name: "MRHSession", Value: f5SAMLTestSession}},
++			}})
++			if !errors.Is(err, ErrInvalidBrowserAuthentication) {
++				t.Fatalf("expected an incomplete browser result to be rejected, got %v", err)
++			}
++			if pending := client.PendingAuthChallenge(); pending == nil || pending.ID != challenge.ID {
++				t.Fatal("rejected browser result withdrew the challenge")
 +			}
 +
 +			err = client.CompleteAuthChallenge(challenge.ID, AuthResponse{Browser: &BrowserResult{
@@ -368,6 +516,7 @@ index 0000000..75edea6
 +}
 +
 +func TestF5SAMLBrowserResultRequiresMRHSession(t *testing.T) {
++	t.Parallel()
 +	g := newF5SAMLTestGateway(t, false)
 +	client := newF5SAMLTestClient(t, g)
 +	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -391,6 +540,7 @@ index 0000000..75edea6
 +}
 +
 +func TestF5SAMLExternalAuthDisabled(t *testing.T) {
++	t.Parallel()
 +	g := newF5SAMLTestGateway(t, false)
 +	client := newF5SAMLTestClient(t, g)
 +	client.options.ExternalAuthDisabled = true
@@ -403,6 +553,7 @@ index 0000000..75edea6
 +}
 +
 +func TestF5FirstFormWithoutSAMLRequest(t *testing.T) {
++	t.Parallel()
 +	for _, testCase := range []struct {
 +		name      string
 +		document  string
@@ -421,6 +572,7 @@ index 0000000..75edea6
 +		},
 +	} {
 +		t.Run(testCase.name, func(t *testing.T) {
++			t.Parallel()
 +			gateway := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 +				writer.Header().Set("Content-Type", "text/html")
 +				_, _ = writer.Write([]byte(testCase.document))
@@ -485,6 +637,7 @@ index 0000000..75edea6
 +}
 +
 +func TestF5SAMLBrowserResultPastedPairs(t *testing.T) {
++	t.Parallel()
 +	g := newF5SAMLTestGateway(t, false)
 +	state, err := advanceF5SAMLTestBrowser(t, g, []BrowserCookie{
 +		{Name: "MRHSession", Value: " MRHSession=" + f5SAMLTestSession + "\n"},
@@ -499,6 +652,7 @@ index 0000000..75edea6
 +}
 +
 +func TestF5SAMLBrowserResultRejectedSessionIsRetryable(t *testing.T) {
++	t.Parallel()
 +	g := newF5SAMLTestGateway(t, false)
 +	_, err := advanceF5SAMLTestBrowser(t, g, []BrowserCookie{
 +		{Name: "MRHSession", Value: "fedcba9876543210fedcba9876543210"},
