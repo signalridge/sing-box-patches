@@ -59,6 +59,10 @@ buildGoModule {
     "-buildid="
   ];
 
+  # buildGoModule runs preBuild in the vendoring derivation too, before vendor/
+  # exists; keep the vendored modules upstream's and patch only the build.
+  overrideModAttrs = _: { preBuild = ""; };
+
   # patches/<module path>/*.patch applies, in name order, with -p1 inside
   # vendor/<module path>. `go mod vendor` leaves out _test.go files and
   # testdata, so a patch must not touch them.

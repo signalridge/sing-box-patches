@@ -1,0 +1,45 @@
+name: update sing-box
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: update-sing-box
+  cancel-in-progress: true
+jobs:
+  update:
+    name: Update to the latest stable sing-box
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+      - name: Update package.nix and build every target
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ runner.temp }}/update-report.md
+        run: scripts/update-sing-box.sh
+      - name: Create pull request
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          # A PAT, so the pull request triggers CI (GITHUB_TOKEN events do not).
+          token: ${{ secrets.GH_PAT }}
+          branch: update/sing-box
+          delete-branch: true
+          add-paths: |
+            package.nix
+            README.md
+          commit-message: ${{ steps.update.outputs.title }}
+          title: ${{ steps.update.outputs.title }}
+          body-path: ${{ runner.temp }}/update-report.md
+          labels: |
+            dependencies
+            nix

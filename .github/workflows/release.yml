@@ -21,6 +21,7 @@ jobs:
       tag_name: ${{ steps.tag.outputs.tag_name }}
       version: ${{ steps.tag.outputs.version }}
       commit_oid: ${{ steps.revision.outputs.commit_oid }}
+      targets: ${{ steps.targets.outputs.targets }}
     steps:
       - name: Validate release tag syntax
         id: tag
@@ -70,48 +71,117 @@ jobs:
             exit 1
           fi
           printf 'commit_oid=%s\n' "$commit_oid" >> "$GITHUB_OUTPUT"
-  darwin-arm64:
-    name: Build and Publish (darwin-arm64)
-    runs-on: macos-latest
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+      - name: List release targets
+        id: targets
+        run: |
+          targets="$(nix eval --json .#lib.releaseTargets)"
+          printf '%s\n' "$targets"
+          printf 'targets=%s\n' "$targets" >> "$GITHUB_OUTPUT"
+  build:
+    name: Build ${{ matrix.target }}
     needs: [validate-tag]
-    permissions:
-      contents: write
+    # Every target cross-compiles from any system; darwin builds on macOS so
+    # the darwin binaries come from the same system as local development.
+    runs-on: ${{ startsWith(matrix.target, 'darwin-') && 'macos-latest' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        target: ${{ fromJSON(needs.validate-tag.outputs.targets) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.validate-tag.outputs.commit_oid }}
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
-      - name: Check flake
-        run: nix flake check -L
       - name: Build package
-        run: nix build .#sing-box -L
-      - name: Verify binary
         env:
+          TARGET: ${{ matrix.target }}
+        run: nix build ".#sing-box-${TARGET}" -L
+      - name: Verify binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
-          ./result/bin/sing-box version
-          actual_version="$(./result/bin/sing-box version | awk 'NR == 1 { print $3 }')"
-          if [[ "$actual_version" != "$VERSION" ]]; then
-            printf '::error::Nix binary version differs: expected %s, got %s.\n' "$VERSION" "$actual_version"
+          set -euo pipefail
+          binary="$(find -L result/bin -maxdepth 1 -type f -name 'sing-box*')"
+          [[ "$(wc -l <<<"$binary")" -eq 1 ]] || { printf '::error::Expected one binary, got: %s\n' "$binary"; exit 1; }
+          info="$(nix shell --inputs-from . nixpkgs#go -c go version -m "$binary")"
+          printf '%s\n' "$info"
+          fail() { printf '::error::%s: %s\n' "$TARGET" "$1"; exit 1; }
+          while IFS= read -r setting; do
+            grep -qxF "$(printf '\tbuild\t%s' "$setting")" <<<"$info" || fail "build setting $setting is missing"
+          done < <(nix eval --json ".#sing-box-${TARGET}.goEnv" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+          grep -qxF $'\tbuild\tCGO_ENABLED=0' <<<"$info" || fail "binary was built with cgo"
+          grep -qE $'^\tbuild\t-tags=.*with_openconnect' <<<"$info" || fail "with_openconnect build tag is missing"
+          # -trimpath keeps -ldflags out of the build info, so the linked
+          # version is checked by running the targets this runner can execute.
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) runnable="linux-amd64 linux-386 linux-386-softfloat" ;;
+            Darwin-arm64) runnable="darwin-arm64" ;;
+            *) runnable="" ;;
+          esac
+          if [[ " $runnable " == *" $TARGET "* ]]; then
+            actual_version="$("$binary" version | awk 'NR == 1 { print $3 }')"
+            [[ "$actual_version" == "$VERSION" ]] || fail "binary reports version ${actual_version}"
+          fi
+      - name: Package like upstream
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="sing-box-${VERSION}-${TARGET}"
+          mkdir -p dist "$name"
+          cp LICENSE "$name/"
+          if [[ "$TARGET" == windows-* ]]; then
+            install -m 755 result/bin/sing-box.exe "$name/sing-box.exe"
+            zip -qr "dist/$name.zip" "$name"
+            asset="$name.zip"
+          else
+            install -m 755 result/bin/sing-box "$name/sing-box"
+            tar -czf "dist/$name.tar.gz" "$name"
+            asset="$name.tar.gz"
+          fi
+          (cd dist && shasum -a 256 "$asset" > "$asset.sha256")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    name: Publish GitHub Release
+    needs: [validate-tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets
+        shell: bash
+        env:
+          TARGETS: ${{ needs.validate-tag.outputs.targets }}
+        run: |
+          set -euo pipefail
+          cd dist
+          expected="$(jq 'length' <<<"$TARGETS")"
+          archives="$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)"
+          if [[ "$archives" -ne "$expected" ]]; then
+            printf '::error::Expected %s archives, found %s.\n' "$expected" "$archives"
             exit 1
           fi
-          file result/bin/sing-box | tee /dev/stderr | grep -q 'arm64'
-      - name: Package like upstream
-        env:
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-        run: |
-          name="sing-box-${VERSION}-darwin-arm64"
-          mkdir "$name"
-          install -m 755 result/bin/sing-box "$name/sing-box"
-          cp LICENSE "$name/"
-          tar -czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+          cat ./*.sha256 | tee SHA256SUMS | sha256sum -c -
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
         run: |
           gh release create "$TAG_NAME" --verify-tag --title "$TAG_NAME" --generate-notes \
-            "$ASSET" "$ASSET.sha256"
+            dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS
