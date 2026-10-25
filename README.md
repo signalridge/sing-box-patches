@@ -18,11 +18,27 @@ upstream's, so `vendorHash` only changes when sing-box does.
 
 | Module | Patch | Purpose |
 |---|---|---|
-| `github.com/sagernet/sing-openconnect` | (none yet) | F5 BIG-IP SAML login as a browser challenge |
+| `github.com/sagernet/sing-openconnect` | `0001-f5-saml-browser-challenge.patch` | F5 BIG-IP SAML login: when the gateway hands the logon to a SAML IdP, raise a browser challenge for the `MRHSession` (and `F5_ST`) cookies instead of failing with "unexpected first F5 HTML form ID" |
+| `github.com/sagernet/sing-openconnect` | `0002-f5-options-parsing.patch` | F5 VPN options as real gateways send them: space-separated DNS/WINS/DNSSuffix lists, routes with dotted IPv4 or IPv6 netmasks, and optional values it cannot parse dropped with a warning (as openconnect does) instead of failing the connection |
 
 Write a patch in a clone of the module at the pinned commit (`cbd68c45de58`),
 run its tests there, commit, then export it with
 `git format-patch -1 -o <this repo>/patches/github.com/sagernet/sing-openconnect/`.
+
+### F5 SAML login
+
+With an `openconnect` endpoint (`"flavor": "f5"`) and an `api` service, a
+gateway that hands the logon to a SAML IdP leaves the endpoint in
+`auth-pending`. Answer it with
+
+```sh
+sing-box api --url <api address> openconnect auth --endpoint <tag>
+```
+
+then log in through the printed gateway URL in any browser and paste the
+gateway's `MRHSession` and `F5_ST` cookies when asked (DevTools > Application >
+Cookies, or in the console:
+`document.cookie.split('; ').filter(c => /^(MRHSession|F5_ST)=/.test(c)).join('\n')`).
 
 ## Build
 
