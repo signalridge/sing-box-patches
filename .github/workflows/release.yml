@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags: ["v*-p*"]
+
+permissions:
+  contents: write
+
+jobs:
+  darwin-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#sing-box -L
+      - name: Package like upstream
+        run: |
+          version="$(./result/bin/sing-box version | awk 'NR == 1 { print $3 }')"
+          name="sing-box-${version}-darwin-arm64"
+          mkdir "$name"
+          install -m 755 result/bin/sing-box "$name/sing-box"
+          cp LICENSE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            "$ASSET" "$ASSET.sha256"
