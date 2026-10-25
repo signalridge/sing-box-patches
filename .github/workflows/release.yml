@@ -185,3 +185,51 @@ jobs:
         run: |
           gh release create "$TAG_NAME" --verify-tag --title "$TAG_NAME" --generate-notes \
             dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS
+  # nur-packages carries a copy of package.nix and patches/ as pkgs/sing-box
+  # (NUR forbids import-from-derivation, so it cannot import them from here).
+  sync-nur:
+    name: Sync NUR package
+    needs: [validate-tag, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.validate-tag.outputs.commit_oid }}
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: signalridge/nur-packages
+          path: nur
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@9383ce2bf08796b65508822f5982f49151badc4e # main
+      - name: Copy package and patches
+        run: |
+          rm -r nur/pkgs/sing-box
+          mkdir -p nur/pkgs/sing-box
+          cp source/package.nix nur/pkgs/sing-box/default.nix
+          cp -R source/patches nur/pkgs/sing-box/patches
+      - name: Check like NUR and build
+        working-directory: nur
+        run: |
+          git add -A
+          nixpkgs="$(nix eval --raw --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.outPath')"
+          nix-env -f . -qa '*' --meta --json --option restrict-eval true \
+            --option allow-import-from-derivation false -I "nixpkgs=$nixpkgs" -I ./ > /dev/null
+          nix build .#sing-box -L
+          ./result/bin/sing-box version
+      - name: Push to nur-packages
+        working-directory: nur
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+        run: |
+          if git diff --cached --quiet; then
+            echo "nur-packages already has ${TAG_NAME}"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "feat: update sing-box to ${TAG_NAME}" \
+            -m "Synced from https://github.com/signalridge/sing-box-patches/releases/tag/${TAG_NAME}"
+          git push "https://x-access-token:${GH_PAT}@github.com/signalridge/nur-packages.git" HEAD:main

@@ -80,6 +80,23 @@ the ones native to the runner, and publishes a GitHub release with
 upstream's), a `.sha256` for each and `SHA256SUMS`. To rerun it for an
 existing tag, use the workflow's manual trigger with that tag.
 
+Its last job copies `package.nix` and `patches/` to
+[signalridge/nur-packages](https://github.com/signalridge/nur-packages) as
+`pkgs/sing-box` (NUR forbids import-from-derivation, so it cannot import them
+from here), checks the result the way NUR evaluates it and builds it with that
+repository's nixpkgs, then pushes it with the `GH_PAT` secret. If only that
+job fails, re-run it from the run's page ("Re-run failed jobs"); the release
+itself is already published.
+
+## Use
+
+```sh
+nix profile install github:signalridge/sing-box-patches#sing-box
+```
+
+or, through NUR, `nur.repos.signalridge.sing-box` (its overlay replaces
+nixpkgs' `sing-box`), or the release archives.
+
 ## Automatic updates
 
 Every Monday, `.github/workflows/update-sing-box.yml` runs
