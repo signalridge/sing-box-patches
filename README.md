@@ -49,10 +49,20 @@ nix flake check
 
 ## Release
 
-Push a tag `v<sing-box version>-p<n>` (e.g. `v1.14.4-p1`). The release
-workflow builds on macOS arm64 and attaches
+Push a tag `v<sing-box version>-p<n>` (e.g. `v1.14.4-p1`) on a commit of
+`main` whose CI passed:
+
+```sh
+git tag -a v1.14.4-p1 -m v1.14.4-p1 && git push origin v1.14.4-p1
+```
+
+The release workflow checks that the tag is well formed, names the
+`version` in `package.nix` and points at `main`, then runs `nix flake check`
+and `nix build .#sing-box` on macOS arm64 (without a shared cache), checks the
+binary's version, and publishes a GitHub release with
 `sing-box-<version>-darwin-arm64.tar.gz` (same layout as upstream's) and its
-`.sha256`.
+`.sha256`. To rerun it for an existing tag, use the workflow's manual trigger
+with that tag.
 
 ## Upgrading sing-box
 

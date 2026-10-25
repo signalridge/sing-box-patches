@@ -1,23 +1,107 @@
 name: release
-
 on:
   push:
     tags: ["v*-p*"]
-
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, for example v1.14.4-p1"
+        required: true
+        type: string
 permissions:
-  contents: write
-
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 jobs:
-  darwin-arm64:
-    runs-on: macos-latest
+  validate-tag:
+    name: Validate Release Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      version: ${{ steps.tag.outputs.version }}
+      commit_oid: ${{ steps.revision.outputs.commit_oid }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: cachix/install-nix-action@v31
-      - run: nix build .#sing-box -L
-      - name: Package like upstream
+      - name: Validate release tag syntax
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag || '' }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          version="$(./result/bin/sing-box version | awk 'NR == 1 { print $3 }')"
-          name="sing-box-${version}-darwin-arm64"
+          tag="${INPUT_TAG:-$REF_NAME}"
+          core='(0|[1-9][0-9]*)'
+          if [[ ! "$tag" =~ ^v(${core}\.${core}\.${core})-p[1-9][0-9]*$ ]]; then
+            printf '::error::Invalid release tag %q. Expected v<sing-box version>-p<n>, for example v1.14.4-p1.\n' "$tag"
+            exit 1
+          fi
+          printf 'tag_name=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.tag.outputs.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Match tag to package version
+        shell: bash
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          package_version="$(sed -n 's/^  version = "\(.*\)";$/\1/p' package.nix)"
+          if [[ "$package_version" != "$VERSION" ]]; then
+            printf '::error::Tag version %s does not match package.nix version %q.\n' "$VERSION" "$package_version"
+            exit 1
+          fi
+      - name: Record validated release commit
+        id: revision
+        shell: bash
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          commit_oid="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$EVENT_NAME" == "push" && "$TRIGGER_SHA" != "$commit_oid" ]]; then
+            printf '::error::Workflow ref %s differs from tag commit %s.\n' "$TRIGGER_SHA" "$commit_oid"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$commit_oid" origin/main; then
+            printf '::error::Tag commit %s is not on main.\n' "$commit_oid"
+            exit 1
+          fi
+          printf 'commit_oid=%s\n' "$commit_oid" >> "$GITHUB_OUTPUT"
+  darwin-arm64:
+    name: Build and Publish (darwin-arm64)
+    runs-on: macos-latest
+    needs: [validate-tag]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.validate-tag.outputs.commit_oid }}
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+      - name: Check flake
+        run: nix flake check -L
+      - name: Build package
+        run: nix build .#sing-box -L
+      - name: Verify binary
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          ./result/bin/sing-box version
+          actual_version="$(./result/bin/sing-box version | awk 'NR == 1 { print $3 }')"
+          if [[ "$actual_version" != "$VERSION" ]]; then
+            printf '::error::Nix binary version differs: expected %s, got %s.\n' "$VERSION" "$actual_version"
+            exit 1
+          fi
+          file result/bin/sing-box | tee /dev/stderr | grep -q 'arm64'
+      - name: Package like upstream
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          name="sing-box-${VERSION}-darwin-arm64"
           mkdir "$name"
           install -m 755 result/bin/sing-box "$name/sing-box"
           cp LICENSE "$name/"
@@ -27,6 +111,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+          gh release create "$TAG_NAME" --verify-tag --title "$TAG_NAME" --generate-notes \
             "$ASSET" "$ASSET.sha256"
