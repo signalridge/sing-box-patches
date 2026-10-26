@@ -209,6 +209,8 @@ jobs:
           mkdir -p nur/pkgs/sing-box
           cp source/package.nix nur/pkgs/sing-box/default.nix
           cp -R source/patches nur/pkgs/sing-box/patches
+          rm -rf nur/pkgs/sing-box-openconnect-auth
+          cp -R source/tools/openconnect-auth nur/pkgs/sing-box-openconnect-auth
       - name: Check like NUR and build
         working-directory: nur
         run: |
@@ -218,6 +220,8 @@ jobs:
             --option allow-import-from-derivation false -I "nixpkgs=$nixpkgs" -I ./ > /dev/null
           nix build .#sing-box -L
           ./result/bin/sing-box version
+          nix build .#sing-box-openconnect-auth -L
+          ./result/bin/sing-box-openconnect-auth --help
       - name: Push to nur-packages
         working-directory: nur
         env:

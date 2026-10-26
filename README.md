@@ -30,6 +30,12 @@ nix profile install github:signalridge/sing-box-patches#sing-box
 Also available as `nur.repos.signalridge.sing-box`, or as archives from the
 [releases](https://github.com/signalridge/sing-box-patches/releases).
 
+For automatic authentication using an external cookie-producing command, install
+`sing-box-openconnect-auth` from the same flake or NUR repository. This Shell
+adapter uses Buf and jq to watch selectors and submit authentication responses;
+it does not change sing-box or implement a gateway's login flow. See its
+[configuration and commands](tools/openconnect-auth/README.md).
+
 For an F5 gateway with SAML login (`openconnect` endpoint with
 `"flavor": "f5"`, plus an `api` service), run
 

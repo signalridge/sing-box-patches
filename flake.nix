@@ -154,6 +154,7 @@
         in
         {
           inherit sing-box;
+          sing-box-openconnect-auth = pkgs.callPackage ./tools/openconnect-auth { };
           default = sing-box;
         }
         // nixpkgs.lib.mapAttrs' (
@@ -162,6 +163,27 @@
       );
       checks = forAllSystems (pkgs: {
         inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) sing-box;
+        openconnect-auth =
+          pkgs.runCommand "openconnect-auth-tests"
+            {
+              nativeBuildInputs = with pkgs; [
+                bash
+                jq
+                coreutils
+                ripgrep
+                shellcheck
+                shfmt
+              ];
+            }
+            ''
+                  test -x ${
+                    self.packages.${pkgs.stdenv.hostPlatform.system}.sing-box-openconnect-auth
+                  }/bin/sing-box-openconnect-auth
+                  shellcheck ${./tools/openconnect-auth}/*.sh
+                  shfmt -d -i 2 -ci ${./tools/openconnect-auth}/*.sh
+              bash ${./tools/openconnect-auth}/tests.sh
+                  touch "$out"
+            '';
       });
       formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
       # Target names for the release workflow's matrix.

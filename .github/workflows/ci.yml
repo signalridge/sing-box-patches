@@ -7,6 +7,25 @@ on:
 permissions:
   contents: read
 jobs:
+  openconnect-auth:
+    name: Shell authentication (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@9383ce2bf08796b65508822f5982f49151badc4e # main
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98 # main
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Lint, format and test the Shell adapter
+        run: |
+          system=$(nix eval --raw --impure --expr builtins.currentSystem)
+          nix build ".#checks.$system.openconnect-auth" -L
   build:
     name: Nix Build (darwin-arm64)
     runs-on: macos-latest
