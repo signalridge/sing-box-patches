@@ -71,7 +71,7 @@ jobs:
             exit 1
           fi
           printf 'commit_oid=%s\n' "$commit_oid" >> "$GITHUB_OUTPUT"
-      - uses: DeterminateSystems/nix-installer-action@9383ce2bf08796b65508822f5982f49151badc4e # main
+      - uses: DeterminateSystems/nix-installer-action@2559b44fed7d4fc978e8dd0e379661afb8b73590 # main
       - name: List release targets
         id: targets
         run: |
@@ -93,7 +93,7 @@ jobs:
         with:
           ref: ${{ needs.validate-tag.outputs.commit_oid }}
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@9383ce2bf08796b65508822f5982f49151badc4e # main
+      - uses: DeterminateSystems/nix-installer-action@2559b44fed7d4fc978e8dd0e379661afb8b73590 # main
       - name: Build package
         env:
           TARGET: ${{ matrix.target }}
@@ -202,7 +202,7 @@ jobs:
           repository: signalridge/nur-packages
           path: nur
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@9383ce2bf08796b65508822f5982f49151badc4e # main
+      - uses: DeterminateSystems/nix-installer-action@2559b44fed7d4fc978e8dd0e379661afb8b73590 # main
       - name: Copy package and patches
         run: |
           rm -r nur/pkgs/sing-box
